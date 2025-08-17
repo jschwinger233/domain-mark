@@ -5,40 +5,26 @@
 #include <bpf_helpers.h>
 #include <bpf_endian.h>
 
-/* tc actions */
 #define TC_ACT_OK   0
-#define TC_ACT_SHOT 2
 
-#define AF_INET 2
-
-/* EtherType / L4 */
 #define ETH_P_IP    bpf_htons(0x0800)
 #define IPPROTO_UDP 17
 
-#ifndef SOL_SOCKET
 #define SOL_SOCKET 1
-#endif
-
-#ifndef SO_MARK
 #define SO_MARK 36
-#endif
 
-/* DNS */
 #define DNS_QR_BIT  0x8000
 
 #define MAX_TYPE_A_ANSWERS 16
 
-#define DST_MATCH_BE (0x01010101)      /* 1.1.1.1 */
-#define NEW_SADDR_BE bpf_htonl(0xC0A8018D)      /* 192.168.1.141 */
-#define NHOP_BE      bpf_htonl(0xC0A80101)      /* 192.168.1.1 */
 
 struct dns_hdr {
-	__be16 id;
-	__be16 flags;
-	__be16 qdcount;
-	__be16 ancount;
-	__be16 nscount;
-	__be16 arcount;
+	u16 id;
+	u16 flags;
+	u16 qdcount;
+	u16 ancount;
+	u16 nscount;
+	u16 arcount;
 } __attribute__((packed));
 
 struct dns_rr_a {
@@ -80,7 +66,7 @@ struct {
 SEC("tc/ingress_dns_parse")
 int tc_ingress_dns_parse(struct __sk_buff *skb)
 {
-	void *data     = (void *)(long)skb->data;
+	void *data = (void *)(long)skb->data;
 	void *data_end = (void *)(long)skb->data_end;
 
 	struct ethhdr *eth = data;
@@ -125,12 +111,12 @@ int tc_ingress_dns_parse(struct __sk_buff *skb)
 
 	struct rdns_val rv = {};
 
-	__u32 pkt_bytes = (__u32)((__u64)data_end - (__u64)data);
+	u32 pkt_bytes = (u32)((u64)data_end - (u64)data);
 
 	if (qname_off + 1 >= pkt_bytes)
 		return TC_ACT_OK;
 
-	__u32 read_len = pkt_bytes - qname_off - 1;
+	u32 read_len = pkt_bytes - qname_off - 1;
 	if (read_len > 63)
 		read_len = 63;
 
@@ -181,15 +167,15 @@ int tc_ingress_dns_parse(struct __sk_buff *skb)
 }
 
 struct lpm_key {
-	u32 prefixlen;      /* in bits, required by LPM trie */
-	u8  rev_qname[64];  /* reversed qname bytes */
+	u32 prefixlen;
+	u8  rev_qname[64];
 };
 
 struct {
 	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
 	__uint(max_entries, 4096);
 	__type(key, struct lpm_key);
-	__type(value, u32);               /* mark */
+	__type(value, u32);
 	__uint(map_flags, BPF_F_NO_PREALLOC);
 } domain_lpm SEC(".maps");
 
@@ -212,6 +198,7 @@ static __always_inline void reverse_qname(u8 dst[64], const u8 src[64], u8 qlen)
         dst[j] = s;
     }
 }
+
 SEC("cgroup/connect4_domain_route")
 int cgroup_connect4_domain_route(struct bpf_sock_addr *ctx)
 {
@@ -223,7 +210,7 @@ int cgroup_connect4_domain_route(struct bpf_sock_addr *ctx)
 	struct routing_decision *rd = bpf_map_lookup_elem(&routing_decisions, &rk);
 	if (rd){
 		mark = rd->mark;
-		goto route_harder;
+		goto set_mark;
 	}
 
 	struct rdns_val *rv = bpf_map_lookup_elem(&rdns, &rk);
@@ -234,7 +221,6 @@ int cgroup_connect4_domain_route(struct bpf_sock_addr *ctx)
 	key.prefixlen = rv->qlen * 8;
 	reverse_qname(key.rev_qname, rv->qname, rv->qlen);
 
-	bpf_printk("rev qname=%s\n", key.rev_qname);
 	u32 *markp = bpf_map_lookup_elem(&domain_lpm, &key);
 	if (!markp)
 		return 1;
@@ -245,7 +231,7 @@ int cgroup_connect4_domain_route(struct bpf_sock_addr *ctx)
 	new_rd.mark = mark;
 	bpf_map_update_elem(&routing_decisions, &rk, &new_rd, BPF_ANY);
 
-route_harder:
+set_mark:
         bpf_setsockopt(ctx, SOL_SOCKET, SO_MARK, &mark, sizeof(mark));
 	return 1;
 }
