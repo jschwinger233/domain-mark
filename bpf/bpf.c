@@ -125,9 +125,20 @@ int tc_ingress_dns_parse(struct __sk_buff *skb)
 
 	struct rdns_val rv = {};
 
-	for (u8 i = 0; i < 64; i++) {
-		bpf_skb_load_bytes(skb, qname_off+i, &rv.qname[i], 1);
+	__u32 pkt_bytes = (__u32)((__u64)data_end - (__u64)data);
 
+	if (qname_off + 1 >= pkt_bytes)
+		return TC_ACT_OK;
+
+	__u32 read_len = pkt_bytes - qname_off - 1;
+	if (read_len > 63)
+		read_len = 63;
+
+	read_len++; // fuck you verifier
+	if (bpf_skb_load_bytes(skb, qname_off, rv.qname, read_len) < 0)
+	    return TC_ACT_OK;
+
+	for (int i=0; i<64; i++) {
 		if (rv.qname[i] == 0) {
 			rv.qlen = i;
 			break;
