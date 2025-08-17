@@ -9,14 +9,28 @@
 #define TC_ACT_OK   0
 #define TC_ACT_SHOT 2
 
+#define AF_INET 2
+
 /* EtherType / L4 */
 #define ETH_P_IP    bpf_htons(0x0800)
 #define IPPROTO_UDP 17
+
+#ifndef SOL_SOCKET
+#define SOL_SOCKET 1
+#endif
+
+#ifndef SO_MARK
+#define SO_MARK 36
+#endif
 
 /* DNS */
 #define DNS_QR_BIT  0x8000
 
 #define MAX_TYPE_A_ANSWERS 16
+
+#define DST_MATCH_BE (0x01010101)      /* 1.1.1.1 */
+#define NEW_SADDR_BE bpf_htonl(0xC0A8018D)      /* 192.168.1.141 */
+#define NHOP_BE      bpf_htonl(0xC0A80101)      /* 192.168.1.1 */
 
 struct dns_hdr {
 	__be16 id;
@@ -35,6 +49,46 @@ struct dns_rr_a {
 	u16 rdlength;
 	u32 addr;
 } __attribute__((packed));
+
+struct rdns_key {
+	u32 addr;
+};
+
+struct rdns_val {
+	u8 qlen;
+	u8 qname[64];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 8192);
+	__type(key, struct rdns_key);
+	__type(value, struct rdns_val);
+} rdns SEC(".maps");
+
+struct routing_decision {
+	u32 mark;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 1024);
+	__type(key, struct rdns_key);
+	__type(value, struct routing_decision);
+} routing_decisions SEC(".maps");
+
+struct domain_rule {
+	u8 qname[64];
+	u8 qlen;
+	u32 mark;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 16);
+	__type(key, int);
+	__type(value, struct domain_rule);
+} domain_rules SEC(".maps");
 
 SEC("tc/ingress_dns_parse")
 int tc_ingress_dns_parse(struct __sk_buff *skb)
@@ -56,7 +110,7 @@ int tc_ingress_dns_parse(struct __sk_buff *skb)
 	if (iph->protocol != IPPROTO_UDP)
 		return TC_ACT_OK;
 
-	__u32 ihl = (__u32)iph->ihl * 4u;
+	u32 ihl = (u32)iph->ihl * 4u;
 	if (ihl < sizeof(*iph))
 		return TC_ACT_OK;
 
@@ -75,29 +129,28 @@ int tc_ingress_dns_parse(struct __sk_buff *skb)
 	if ((void *)(dh + 1) > data_end)
 		return TC_ACT_OK;
 
-	__u16 flags = bpf_ntohs(dh->flags);
+	u16 flags = bpf_ntohs(dh->flags);
 	if ((flags & DNS_QR_BIT) == 0 || bpf_ntohs(dh->qdcount) != 1)
 		return TC_ACT_OK;
 
 	u8 *qname_ptr = (u8 *)(dh + 1);
 	u32 qname_off = (void *)qname_ptr - (void *)data;
 
-	u8 qname[64];
-	u8 qname_len = 0;
+	struct rdns_val rv = {};
 
 	for (u8 i = 0; i < 64; i++) {
-		bpf_skb_load_bytes(skb, qname_off+i, &qname[i], 1);
+		bpf_skb_load_bytes(skb, qname_off+i, &rv.qname[i], 1);
 
-		if (qname[i] == 0) {
-			qname_len = i;
+		if (rv.qname[i] == 0) {
+			rv.qlen = i;
 			break;
 		}
 	}
 
-	if (qname_len == 0)
+	if (rv.qlen == 0)
 		return TC_ACT_OK;
 
-	u8 *cur = qname_ptr + qname_len + 1;
+	u8 *cur = qname_ptr + rv.qlen + 1;
 	if ((void *)(cur + 4) > data_end)
 		return TC_ACT_OK;
 	cur += 4;
@@ -105,6 +158,7 @@ int tc_ingress_dns_parse(struct __sk_buff *skb)
 	u16 an = bpf_ntohs(dh->ancount);
 	if (an > MAX_TYPE_A_ANSWERS) an = MAX_TYPE_A_ANSWERS;
 
+	struct rdns_key rk = {};
 	for (int ai = 0; ai < MAX_TYPE_A_ANSWERS; ai++) {
 		if (ai >= an)
 			return TC_ACT_OK;
@@ -118,7 +172,8 @@ int tc_ingress_dns_parse(struct __sk_buff *skb)
 			return TC_ACT_OK;
 
 		if (bpf_ntohs(rr->type) == 1 /* A */ && bpf_ntohs(rr->class_) == 1 /* IN */) {
-			bpf_printk("A[%d]=%pI4 domain=%s\n", ai, &rr->addr, qname);
+			rk.addr = rr->addr;
+			bpf_map_update_elem(&rdns, &rk, &rv, BPF_ANY);
 		}
 
 		cur += sizeof(*rr);
@@ -127,5 +182,69 @@ int tc_ingress_dns_parse(struct __sk_buff *skb)
 	return TC_ACT_OK;
 }
 
-char _license[] SEC("license") = "Dual BSD/GPL";
+struct lpm_key {
+	u32 prefixlen;      /* in bits, required by LPM trie */
+	u8  rev_qname[64];  /* reversed qname bytes */
+};
 
+struct {
+	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__uint(max_entries, 4096);
+	__type(key, struct lpm_key);
+	__type(value, u32);               /* mark */
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+} domain_lpm SEC(".maps");
+
+static __always_inline void reverse_qname(u8 dst[64], const u8 src[64], u8 qlen)
+{
+    if (qlen == 0)
+        return;
+    if (qlen > 64)
+        qlen = 64;
+
+    u32 base = (u32)qlen - 1;
+
+    for (int i = 0; i < 64; i++) {
+        if ((u8)i > base)
+            break;
+
+        u8 s = src[i];
+
+        u32 j = base - i;
+        dst[j] = s;
+    }
+}
+SEC("cgroup/connect4_domain_route")
+int cgroup_connect4_domain_route(struct bpf_sock_addr *ctx)
+{
+	struct rdns_key rk = {};
+	rk.addr = ctx->user_ip4;
+
+	u32 mark;
+
+	struct routing_decision *rd = bpf_map_lookup_elem(&routing_decisions, &rk);
+	if (rd){
+		mark = rd->mark;
+		goto route_harder;
+	}
+
+	struct rdns_val *rv = bpf_map_lookup_elem(&rdns, &rk);
+	if (!rv)
+		return 1;
+
+	struct lpm_key key = {};
+	key.prefixlen = rv->qlen * 8;
+	reverse_qname(key.rev_qname, rv->qname, rv->qlen);
+
+	u32 *markp = bpf_map_lookup_elem(&domain_lpm, &key);
+	if (!markp)
+		return 1;
+
+	mark = *markp;
+
+route_harder:
+        bpf_setsockopt(ctx, SOL_SOCKET, SO_MARK, &mark, sizeof(mark));
+	return 1;
+}
+
+char _license[] SEC("license") = "Dual BSD/GPL";

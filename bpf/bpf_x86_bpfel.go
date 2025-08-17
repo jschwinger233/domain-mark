@@ -8,9 +8,40 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
+
+type BpfDomainRule struct {
+	_     structs.HostLayout
+	Qname [64]uint8
+	Qlen  uint8
+	_     [3]byte
+	Mark  uint32
+}
+
+type BpfLpmKey struct {
+	_         structs.HostLayout
+	Prefixlen uint32
+	RevQname  [64]uint8
+}
+
+type BpfRdnsKey struct {
+	_    structs.HostLayout
+	Addr uint32
+}
+
+type BpfRdnsVal struct {
+	_     structs.HostLayout
+	Qlen  uint8
+	Qname [64]uint8
+}
+
+type BpfRoutingDecision struct {
+	_    structs.HostLayout
+	Mark uint32
+}
 
 // LoadBpf returns the embedded CollectionSpec for Bpf.
 func LoadBpf() (*ebpf.CollectionSpec, error) {
@@ -54,13 +85,18 @@ type BpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfProgramSpecs struct {
-	TcIngressDnsParse *ebpf.ProgramSpec `ebpf:"tc_ingress_dns_parse"`
+	CgroupConnect4DomainRoute *ebpf.ProgramSpec `ebpf:"cgroup_connect4_domain_route"`
+	TcIngressDnsParse         *ebpf.ProgramSpec `ebpf:"tc_ingress_dns_parse"`
 }
 
 // BpfMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfMapSpecs struct {
+	DomainLpm        *ebpf.MapSpec `ebpf:"domain_lpm"`
+	DomainRules      *ebpf.MapSpec `ebpf:"domain_rules"`
+	Rdns             *ebpf.MapSpec `ebpf:"rdns"`
+	RoutingDecisions *ebpf.MapSpec `ebpf:"routing_decisions"`
 }
 
 // BpfVariableSpecs contains global variables before they are loaded into the kernel.
@@ -89,10 +125,19 @@ func (o *BpfObjects) Close() error {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfMaps struct {
+	DomainLpm        *ebpf.Map `ebpf:"domain_lpm"`
+	DomainRules      *ebpf.Map `ebpf:"domain_rules"`
+	Rdns             *ebpf.Map `ebpf:"rdns"`
+	RoutingDecisions *ebpf.Map `ebpf:"routing_decisions"`
 }
 
 func (m *BpfMaps) Close() error {
-	return _BpfClose()
+	return _BpfClose(
+		m.DomainLpm,
+		m.DomainRules,
+		m.Rdns,
+		m.RoutingDecisions,
+	)
 }
 
 // BpfVariables contains all global variables after they have been loaded into the kernel.
@@ -105,11 +150,13 @@ type BpfVariables struct {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfPrograms struct {
-	TcIngressDnsParse *ebpf.Program `ebpf:"tc_ingress_dns_parse"`
+	CgroupConnect4DomainRoute *ebpf.Program `ebpf:"cgroup_connect4_domain_route"`
+	TcIngressDnsParse         *ebpf.Program `ebpf:"tc_ingress_dns_parse"`
 }
 
 func (p *BpfPrograms) Close() error {
 	return _BpfClose(
+		p.CgroupConnect4DomainRoute,
 		p.TcIngressDnsParse,
 	)
 }

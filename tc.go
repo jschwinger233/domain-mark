@@ -50,7 +50,7 @@ func attachTC(prog *ebpf.Program, linkIdx int, ingress bool) (*netlink.BpfFilter
 			Protocol:  unix.ETH_P_ALL,
 		},
 		Fd:           prog.FD(),
-		Name:         "tc_limit_mongo_total_conn",
+		Name:         "domain_route",
 		DirectAction: true,
 	}
 

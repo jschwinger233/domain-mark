@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 	"github.com/jschwinger233/linux-domain-routing/bpf"
 	"github.com/vishvananda/netlink"
 )
@@ -61,6 +62,26 @@ func main() {
 
 		log.Printf("tc filter attached on %s\n", linkObj.Attrs().Name)
 	}
+
+	cg, err := link.AttachCgroup(link.CgroupOptions{
+		Path:    "/sys/fs/cgroup",
+		Attach:  ebpf.AttachCGroupInet4Connect,
+		Program: objs.CgroupConnect4DomainRoute,
+	})
+	if err != nil {
+		log.Fatalf("AttachCgroup: %v: %w", objs.CgroupConnect4DomainRoute.String(), err)
+	}
+	defer cg.Close()
+
+	//linkObj, err := netlink.LinkByName("enx58ef687e15eb")
+	//if err != nil {
+	//	log.Fatalf("failed to get wlp0s20f3 %v", err)
+	//}
+	//filter, err := attachTC(objs.TcEgressRedirect, linkObj.Attrs().Index, false)
+	//if err != nil {
+	//	log.Fatalf("failed to attach tc: %v", err)
+	//}
+	//defer netlink.FilterDel(filter)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
