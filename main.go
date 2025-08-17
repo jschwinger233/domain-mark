@@ -47,7 +47,7 @@ func main() {
 	}
 	for _, link := range links {
 		flags := link.Attrs().Flags
-		if link.Type() == "device" && flags&net.FlagLoopback == 0 && flags&net.FlagUp != 0 && flags&net.FlagRunning != 0 {
+		if link.Type() == "device" && flags&net.FlagUp != 0 && flags&net.FlagRunning != 0 {
 			availableLinks = append(availableLinks, link)
 		}
 	}
