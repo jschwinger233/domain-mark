@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/cilium/ebpf"
@@ -73,17 +76,83 @@ func main() {
 	}
 	defer cg.Close()
 
-	//linkObj, err := netlink.LinkByName("enx58ef687e15eb")
-	//if err != nil {
-	//	log.Fatalf("failed to get wlp0s20f3 %v", err)
-	//}
-	//filter, err := attachTC(objs.TcEgressRedirect, linkObj.Attrs().Index, false)
-	//if err != nil {
-	//	log.Fatalf("failed to attach tc: %v", err)
-	//}
-	//defer netlink.FilterDel(filter)
+	if len(os.Args) > 1 {
+		for _, arg := range os.Args[1:] {
+			domain, markStr, ok := strings.Cut(arg, ":")
+			if !ok {
+				log.Printf("bad arg %q (want domain:mark)", arg)
+				return
+			}
+			mark, err := parseMark(markStr)
+			if err != nil {
+				log.Printf("parse mark %q: %v", markStr, err)
+				return
+			}
+
+			wire, err := normalizeDomainToDNSBytes(domain)
+			if err != nil {
+				log.Printf("domain %q: %v", domain, err)
+				return
+			}
+			rev := reverseBytes(wire)
+
+			if len(rev) > 64 {
+				log.Printf("reversed qname for %q is %d bytes; max supported is 64", domain, len(rev))
+				return
+			}
+
+			var key bpf.BpfLpmKey
+			key.Prefixlen = uint32(len(rev) * 8)
+			copy(key.RevQname[:], rev)
+
+			val := mark // u32 value
+
+			if err := objs.DomainLpm.Update(&key, &val, ebpf.UpdateAny); err != nil {
+				log.Fatalf("DomainLpm.Update %q → 0x%x: %v", domain, mark, err)
+			}
+			log.Printf("DomainLpm upsert: %q → mark 0x%x (prefixlen=%d bits)", domain, mark, key.Prefixlen)
+
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	<-ctx.Done()
+}
+
+func normalizeDomainToDNSBytes(domain string) ([]byte, error) {
+	d := strings.TrimSpace(strings.TrimSuffix(strings.ToLower(domain), "."))
+	if d == "" {
+		return nil, fmt.Errorf("empty domain")
+	}
+	parts := strings.Split(d, ".")
+	var out []byte
+	for _, p := range parts {
+		if p == "" {
+			return nil, fmt.Errorf("bad domain %q: empty label", domain)
+		}
+		if len(p) > 63 {
+			return nil, fmt.Errorf("label %q too long (>63)", p)
+		}
+		out = append(out, byte(len(p)))
+		out = append(out, []byte(p)...)
+	}
+	if len(out) > 255 {
+		return nil, fmt.Errorf("encoded name too long (>255 bytes)")
+	}
+	return out, nil
+}
+
+func reverseBytes(b []byte) []byte {
+	n := len(b)
+	out := make([]byte, n)
+	for i := 0; i < n; i++ {
+		out[i] = b[n-1-i]
+	}
+	return out
+}
+
+func parseMark(s string) (uint32, error) {
+	u, err := strconv.ParseUint(s, 0, 32) // handles 0x… and decimal
+	return uint32(u), err
 }

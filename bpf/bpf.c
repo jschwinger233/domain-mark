@@ -77,19 +77,6 @@ struct {
 	__type(value, struct routing_decision);
 } routing_decisions SEC(".maps");
 
-struct domain_rule {
-	u8 qname[64];
-	u8 qlen;
-	u32 mark;
-};
-
-struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__uint(max_entries, 16);
-	__type(key, int);
-	__type(value, struct domain_rule);
-} domain_rules SEC(".maps");
-
 SEC("tc/ingress_dns_parse")
 int tc_ingress_dns_parse(struct __sk_buff *skb)
 {
@@ -236,11 +223,16 @@ int cgroup_connect4_domain_route(struct bpf_sock_addr *ctx)
 	key.prefixlen = rv->qlen * 8;
 	reverse_qname(key.rev_qname, rv->qname, rv->qlen);
 
+	bpf_printk("rev qname=%s\n", key.rev_qname);
 	u32 *markp = bpf_map_lookup_elem(&domain_lpm, &key);
 	if (!markp)
 		return 1;
 
 	mark = *markp;
+
+	struct routing_decision new_rd = {};
+	new_rd.mark = mark;
+	bpf_map_update_elem(&routing_decisions, &rk, &new_rd, BPF_ANY);
 
 route_harder:
         bpf_setsockopt(ctx, SOL_SOCKET, SO_MARK, &mark, sizeof(mark));

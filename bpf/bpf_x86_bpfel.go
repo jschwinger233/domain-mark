@@ -13,14 +13,6 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type BpfDomainRule struct {
-	_     structs.HostLayout
-	Qname [64]uint8
-	Qlen  uint8
-	_     [3]byte
-	Mark  uint32
-}
-
 type BpfLpmKey struct {
 	_         structs.HostLayout
 	Prefixlen uint32
@@ -94,7 +86,6 @@ type BpfProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfMapSpecs struct {
 	DomainLpm        *ebpf.MapSpec `ebpf:"domain_lpm"`
-	DomainRules      *ebpf.MapSpec `ebpf:"domain_rules"`
 	Rdns             *ebpf.MapSpec `ebpf:"rdns"`
 	RoutingDecisions *ebpf.MapSpec `ebpf:"routing_decisions"`
 }
@@ -126,7 +117,6 @@ func (o *BpfObjects) Close() error {
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfMaps struct {
 	DomainLpm        *ebpf.Map `ebpf:"domain_lpm"`
-	DomainRules      *ebpf.Map `ebpf:"domain_rules"`
 	Rdns             *ebpf.Map `ebpf:"rdns"`
 	RoutingDecisions *ebpf.Map `ebpf:"routing_decisions"`
 }
@@ -134,7 +124,6 @@ type BpfMaps struct {
 func (m *BpfMaps) Close() error {
 	return _BpfClose(
 		m.DomainLpm,
-		m.DomainRules,
 		m.Rdns,
 		m.RoutingDecisions,
 	)
