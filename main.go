@@ -28,7 +28,7 @@ const (
 func main() {
 	root := &cobra.Command{
 		Use:   "domain-mark",
-		Short: "Mark traffic by domain, backed by eBPF maps",
+		Short: "Domain-based packet marking, kernel-fast and daemon-free.",
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 
 			if err := os.MkdirAll(pinBase, 0o755); err != nil {
