@@ -1,4 +1,4 @@
-module github.com/jschwinger233/linux-domain-routing
+module github.com/jschwinger233/domain-mark
 
 go 1.24.4
 

@@ -50,7 +50,7 @@ func attachTC(prog *ebpf.Program, linkIdx int, ingress bool) (*netlink.BpfFilter
 			Protocol:  unix.ETH_P_ALL,
 		},
 		Fd:           prog.FD(),
-		Name:         "domain_route",
+		Name:         "ingress_qname_parse",
 		DirectAction: true,
 	}
 

@@ -53,7 +53,7 @@ struct {
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } rdns SEC(".maps");
 
-struct routing_decision {
+struct decision {
 	u32 mark;
 };
 
@@ -61,9 +61,9 @@ struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__uint(max_entries, 1024);
 	__type(key, struct rdns_key);
-	__type(value, struct routing_decision);
+	__type(value, struct decision);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
-} routing_decisions SEC(".maps");
+} decisions SEC(".maps");
 
 SEC("tc/ingress_dns_parse")
 int tc_ingress_dns_parse(struct __sk_buff *skb)
@@ -202,15 +202,15 @@ static __always_inline void reverse_qname(u8 dst[64], const u8 src[64], u8 qlen)
     }
 }
 
-SEC("cgroup/connect4_domain_route")
-int cgroup_connect4_domain_route(struct bpf_sock_addr *ctx)
+SEC("cgroup/connect4_domain_mark")
+int cgroup_connect4_domain_mark(struct bpf_sock_addr *ctx)
 {
 	struct rdns_key rk = {};
 	rk.addr = ctx->user_ip4;
 
 	u32 mark;
 
-	struct routing_decision *rd = bpf_map_lookup_elem(&routing_decisions, &rk);
+	struct decision *rd = bpf_map_lookup_elem(&decisions, &rk);
 	if (rd){
 		mark = rd->mark;
 		goto set_mark;
@@ -230,9 +230,9 @@ int cgroup_connect4_domain_route(struct bpf_sock_addr *ctx)
 
 	mark = *markp;
 
-	struct routing_decision new_rd = {};
+	struct decision new_rd = {};
 	new_rd.mark = mark;
-	bpf_map_update_elem(&routing_decisions, &rk, &new_rd, BPF_ANY);
+	bpf_map_update_elem(&decisions, &rk, &new_rd, BPF_ANY);
 
 set_mark:
         bpf_setsockopt(ctx, SOL_SOCKET, SO_MARK, &mark, sizeof(mark));

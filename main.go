@@ -12,7 +12,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
-	"github.com/jschwinger233/linux-domain-routing/bpf"
+	"github.com/jschwinger233/domain-mark/bpf"
 	"github.com/spf13/cobra"
 	"github.com/vishvananda/netlink"
 )
@@ -22,14 +22,13 @@ const (
 	pinLinksDir   = pinBase + "/links"
 	pinCgroupLink = pinLinksDir + "/cgroup_connect4"
 
-	tcProgName = "tc_ingress_dns_parse"
 	tcPriority = 23333
 )
 
 func main() {
 	root := &cobra.Command{
 		Use:   "domain-mark",
-		Short: "Domain routing rule & rDNS helpers backed by eBPF maps",
+		Short: "Mark traffic by domain, backed by eBPF maps",
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 
 			if err := os.MkdirAll(pinBase, 0o755); err != nil {
@@ -98,7 +97,7 @@ func startCmd(_ *cobra.Command, _ []string) error {
 	cgl, err := link.AttachCgroup(link.CgroupOptions{
 		Path:    "/sys/fs/cgroup",
 		Attach:  ebpf.AttachCGroupInet4Connect,
-		Program: objs.CgroupConnect4DomainRoute,
+		Program: objs.CgroupConnect4DomainMark,
 	})
 	if err != nil {
 		return fmt.Errorf("attach cgroup inet4/connect: %w", err)
@@ -156,7 +155,7 @@ func stopCmd(_ *cobra.Command, _ []string) error {
 
 	_ = os.Remove(filepath.Join(pinBase, "domain_lpm"))
 	_ = os.Remove(filepath.Join(pinBase, "rdns"))
-	_ = os.Remove(filepath.Join(pinBase, "routing_decisions"))
+	_ = os.Remove(filepath.Join(pinBase, "decisions"))
 	fmt.Println("maps: unpinned (if existed)")
 
 	return nil
@@ -371,9 +370,9 @@ func decisionCmd(_ *cobra.Command, _ []string) error {
 	}
 	defer closer()
 
-	iter := objs.RoutingDecisions.Iterate()
+	iter := objs.Decisions.Iterate()
 	var k bpf.BpfRdnsKey
-	var v bpf.BpfRoutingDecision
+	var v bpf.BpfDecision
 	for iter.Next(&k, &v) {
 		ip := ipv4FromU32(k.Addr)
 		fmt.Printf("%-15s  0x%x\n", ip, v.Mark)
