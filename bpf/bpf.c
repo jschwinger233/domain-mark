@@ -7,7 +7,7 @@
 
 #define TC_ACT_OK   0
 
-#define ETH_P_IP    bpf_htons(0x0800)
+#define ETH_P_IP	bpf_htons(0x0800)
 #define IPPROTO_UDP 17
 
 #define SOL_SOCKET 1
@@ -124,7 +124,7 @@ int tc_ingress_dns_parse(struct __sk_buff *skb)
 
 	read_len++; // fuck you verifier
 	if (bpf_skb_load_bytes(skb, qname_off, rv.qname, read_len) < 0)
-	    return TC_ACT_OK;
+		return TC_ACT_OK;
 
 	for (int i=0; i<64; i++) {
 		if (rv.qname[i] == 0) {
@@ -184,22 +184,22 @@ struct {
 
 static __always_inline void reverse_qname(u8 dst[64], const u8 src[64], u8 qlen)
 {
-    if (qlen == 0)
-        return;
-    if (qlen > 64)
-        qlen = 64;
+	if (qlen == 0)
+		return;
+	if (qlen > 64)
+		qlen = 64;
 
-    u32 base = (u32)qlen - 1;
+	u32 base = (u32)qlen - 1;
 
-    for (int i = 0; i < 64; i++) {
-        if ((u8)i > base)
-            break;
+	for (int i = 0; i < 64; i++) {
+		if ((u8)i > base)
+			break;
 
-        u8 s = src[i];
+		u8 s = src[i];
 
-        u32 j = base - i;
-        dst[j] = s;
-    }
+		u32 j = base - i;
+		dst[j] = s;
+	}
 }
 
 SEC("cgroup/connect4_domain_mark")
@@ -235,7 +235,7 @@ int cgroup_connect4_domain_mark(struct bpf_sock_addr *ctx)
 	bpf_map_update_elem(&decisions, &rk, &new_rd, BPF_ANY);
 
 set_mark:
-        bpf_setsockopt(ctx, SOL_SOCKET, SO_MARK, &mark, sizeof(mark));
+	bpf_setsockopt(ctx, SOL_SOCKET, SO_MARK, &mark, sizeof(mark));
 	return 1;
 }
 
