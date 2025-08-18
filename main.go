@@ -89,6 +89,19 @@ func main() {
 				return
 			}
 
+			if domain == "default" {
+				var key bpf.BpfLpmKey
+				key.Prefixlen = 0
+
+				val := mark // u32 value
+
+				if err := objs.DomainLpm.Update(&key, &val, ebpf.UpdateAny); err != nil {
+					log.Fatalf("DomainLpm.Update %q → 0x%x: %v", domain, mark, err)
+				}
+				log.Printf("DomainLpm upsert: %q → mark 0x%x (prefixlen=%d bits)", domain, mark, key.Prefixlen)
+				continue
+			}
+
 			wire, err := normalizeDomainToDNSBytes(domain)
 			if err != nil {
 				log.Printf("domain %q: %v", domain, err)
