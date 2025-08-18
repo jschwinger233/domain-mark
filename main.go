@@ -1,16 +1,13 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -29,7 +26,11 @@ func main() {
 		Programs: ebpf.ProgramOptions{
 			LogLevel: ebpf.LogLevelInstruction,
 		},
+		Maps: ebpf.MapOptions{
+			PinPath: "/sys/fs/bpf/domainmark",
+		},
 	}
+	os.MkdirAll(opts.Maps.PinPath, 0o755)
 	if err = spec.LoadAndAssign(&objs, &opts); err != nil {
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
@@ -127,10 +128,6 @@ func main() {
 
 		}
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	<-ctx.Done()
 }
 
 func normalizeDomainToDNSBytes(domain string) ([]byte, error) {

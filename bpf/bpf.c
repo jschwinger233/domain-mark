@@ -50,6 +50,7 @@ struct {
 	__uint(max_entries, 8192);
 	__type(key, struct rdns_key);
 	__type(value, struct rdns_val);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } rdns SEC(".maps");
 
 struct routing_decision {
@@ -61,6 +62,7 @@ struct {
 	__uint(max_entries, 1024);
 	__type(key, struct rdns_key);
 	__type(value, struct routing_decision);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } routing_decisions SEC(".maps");
 
 SEC("tc/ingress_dns_parse")
@@ -177,6 +179,7 @@ struct {
 	__type(key, struct lpm_key);
 	__type(value, u32);
 	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } domain_lpm SEC(".maps");
 
 static __always_inline void reverse_qname(u8 dst[64], const u8 src[64], u8 qlen)
