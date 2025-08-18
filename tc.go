@@ -46,7 +46,7 @@ func attachTC(prog *ebpf.Program, linkIdx int, ingress bool) (*netlink.BpfFilter
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: linkIdx,
 			Parent:    uint32(parent),
-			Priority:  1,
+			Priority:  tcPriority,
 			Protocol:  unix.ETH_P_ALL,
 		},
 		Fd:           prog.FD(),
