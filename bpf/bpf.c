@@ -182,22 +182,32 @@ struct {
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } domain_lpm SEC(".maps");
 
-static __always_inline void reverse_qname(u8 dst[64], const u8 src[64], u8 qlen)
+#define barrier() asm volatile("" ::: "memory")
+
+static __noinline void reverse_qname(u8 dst[64], const u8 src[64], u8 qlen)
 {
 	if (qlen == 0)
 		return;
 	if (qlen > 64)
 		qlen = 64;
 
-	u32 base = (u32)qlen - 1;
+	u8 base = qlen - 1;
+	if (base > 64)
+		return;
 
-	for (int i = 0; i < 64; i++) {
-		if ((u8)i > base)
-			break;
+	for (u8 i = 0; i < 64; i++) {
+		if (i > base) {
+			dst[i] = 0;
+			continue;
+		}
 
 		u8 s = src[i];
 
-		u32 j = base - i;
+		barrier(); // fuck you verifier
+		u8 j = base - i;
+		if (j > 64)
+			return;
+
 		dst[j] = s;
 	}
 }
@@ -217,8 +227,15 @@ int cgroup_connect4_domain_mark(struct bpf_sock_addr *ctx)
 	}
 
 	struct rdns_val *rv = bpf_map_lookup_elem(&rdns, &rk);
-	if (!rv)
+	if (!rv) {
+		struct lpm_key empty_key = {};
+		u32 *default_markp = bpf_map_lookup_elem(&domain_lpm, &empty_key);
+		if (default_markp && *default_markp) {
+			mark = *default_markp;
+			goto set_decision_and_mark;
+		}
 		return 1;
+	}
 
 	struct lpm_key key = {};
 	key.prefixlen = rv->qlen * 8;
@@ -230,6 +247,7 @@ int cgroup_connect4_domain_mark(struct bpf_sock_addr *ctx)
 
 	mark = *markp;
 
+set_decision_and_mark:
 	struct decision new_rd = {};
 	new_rd.mark = mark;
 	bpf_map_update_elem(&decisions, &rk, &new_rd, BPF_ANY);
