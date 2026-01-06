@@ -32,4 +32,4 @@ go.work.sum
 # .vscode/
 
 tags
-linux-domain-routing
+domain-route

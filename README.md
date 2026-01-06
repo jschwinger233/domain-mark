@@ -12,9 +12,7 @@ Domain-based socket routing by interface index, kernel-fast and daemon-free.
 - A cgroup/connect4 program matches the destination domain against a suffix rule set (LPM trie).
 - The socket is bound to the selected interface via `SO_BINDTOIFINDEX`.
 
-There is no long-running daemon. `start` attaches and exits; maps and links are pinned under `/sys/fs/bpf/domain-mark` (current pin path).
-
-Note: the binary/CLI output still uses `domain-mark` until the rename lands; commands below reflect that.
+There is no long-running daemon. `start` attaches and exits; maps and links are pinned under `/sys/fs/bpf/domain-route`.
 
 ## Requirements
 
@@ -25,21 +23,21 @@ Note: the binary/CLI output still uses `domain-mark` until the rename lands; com
 
 ```
 # 1) Attach programs, pin links & maps (requires root); exits immediately
-sudo ./domain-mark start
+sudo ./domain-route start
 
 # 2) Find an interface index (example uses `eth1` -> 3)
 ip -o link show
 
 # 3) Add your domain → ifindex rule (matches example.com and *.example.com)
-sudo ./domain-mark rule add example.com 3
+sudo ./domain-route rule add example.com 3
 
 # 4) Inspect state
-sudo ./domain-mark rule list
-sudo ./domain-mark rdns       # reverse-DNS cache (IPv4 → domain)
-sudo ./domain-mark decision   # effective IP → ifindex decisions
+sudo ./domain-route rule list
+sudo ./domain-route rdns       # reverse-DNS cache (IPv4 → domain)
+sudo ./domain-route decision   # effective IP → ifindex decisions
 
 # 5) Tear down
-sudo ./domain-mark stop
+sudo ./domain-route stop
 ```
 
 ## How matching works
@@ -70,7 +68,7 @@ lowercase and without a trailing dot.
 Domain-based socket routing via interface index, kernel-fast and daemon-free.
 
 Usage:
-  domain-mark [command]
+  domain-route [command]
 
 Available Commands:
   decision    Print decisions (ip ifindex)

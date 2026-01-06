@@ -13,13 +13,13 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
-	"github.com/jschwinger233/domain-mark/bpf"
+	"github.com/jschwinger233/domain-route/bpf"
 	"github.com/spf13/cobra"
 	"github.com/vishvananda/netlink"
 )
 
 const (
-	pinBase       = "/sys/fs/bpf/domain-mark"
+	pinBase       = "/sys/fs/bpf/domain-route"
 	pinLinksDir   = pinBase + "/links"
 	pinCgroupLink = pinLinksDir + "/cgroup_connect4"
 
@@ -28,7 +28,7 @@ const (
 
 func main() {
 	root := &cobra.Command{
-		Use:   "domain-mark",
+		Use:   "domain-route",
 		Short: "Domain-based socket routing via interface index, kernel-fast and daemon-free.",
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			if err := os.MkdirAll(pinBase, 0o755); err != nil {
