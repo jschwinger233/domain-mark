@@ -17,6 +17,8 @@
 
 #define MAX_TYPE_A_ANSWERS 16
 
+#define barrier() asm volatile("" ::: "memory")
+
 
 struct dns_hdr {
 	u16 id;
@@ -68,6 +70,9 @@ struct {
 SEC("tc/ingress_dns_parse")
 int tc_ingress_dns_parse(struct __sk_buff *skb)
 {
+	if (skb->protocol != bpf_htons(ETH_P_IP))
+		return TC_ACT_OK;
+
 	void *data = (void *)(long)skb->data;
 	void *data_end = (void *)(long)skb->data_end;
 
@@ -78,52 +83,43 @@ int tc_ingress_dns_parse(struct __sk_buff *skb)
 	if (eth->h_proto != ETH_P_IP)
 		return TC_ACT_OK;
 
-	struct iphdr *iph = (void *)(eth + 1);
-	if ((void *)(iph + 1) > data_end)
+	struct iphdr *ip = (void *)(eth + 1);
+	if ((void *)(ip + 1) > data_end)
 		return TC_ACT_OK;
 
-	if (iph->protocol != IPPROTO_UDP)
+	if (ip->protocol != IPPROTO_UDP)
 		return TC_ACT_OK;
 
-	u32 ihl = (u32)iph->ihl * 4u;
-	if (ihl < sizeof(*iph))
+	struct udphdr *udp = (void *)ip + ip->ihl * 4;
+	if ((void *)(udp + 1) > data_end)
 		return TC_ACT_OK;
 
-	void *l4 = (void *)iph + ihl;
-	if (l4 > data_end)
+	if (udp->source != bpf_htons(53))
 		return TC_ACT_OK;
 
-	struct udphdr *uh = l4;
-	if ((void *)(uh + 1) > data_end)
+	struct dns_hdr *dns = (struct dns_hdr *)(udp + 1);
+	if ((void *)(dns + 1) > data_end)
 		return TC_ACT_OK;
 
-	if (uh->source != bpf_htons(53))
+	if ((bpf_ntohs(dns->flags) & DNS_QR_BIT) == 0 || bpf_ntohs(dns->qdcount) != 1)
 		return TC_ACT_OK;
 
-	struct dns_hdr *dh = (void *)(uh + 1);
-	if ((void *)(dh + 1) > data_end)
-		return TC_ACT_OK;
-
-	u16 flags = bpf_ntohs(dh->flags);
-	if ((flags & DNS_QR_BIT) == 0 || bpf_ntohs(dh->qdcount) != 1)
-		return TC_ACT_OK;
-
-	u8 *qname_ptr = (u8 *)(dh + 1);
+	u8 *qname_ptr = (u8 *)(dns + 1);
 	u32 qname_off = (void *)qname_ptr - (void *)data;
 
 	struct rdns_val rv = {};
 
-	u32 pkt_bytes = (u32)((u64)data_end - (u64)data);
+	u32 qname_len = sizeof(rv.qname);
+	if ((void *)(qname_ptr + qname_len) > (void *)data_end)
+		qname_len = (u64)data_end - (u64)qname_ptr;
 
-	if (qname_off + 1 >= pkt_bytes)
+	if (qname_len > sizeof(rv.qname))
+		qname_len = sizeof(rv.qname);
+
+	if (qname_len == 0)
 		return TC_ACT_OK;
 
-	u32 read_len = pkt_bytes - qname_off - 1;
-	if (read_len > 63)
-		read_len = 63;
-
-	read_len++; // fuck you verifier
-	if (bpf_skb_load_bytes(skb, qname_off, rv.qname, read_len) < 0)
+	if (bpf_skb_load_bytes(skb, qname_off, rv.qname, qname_len) < 0)
 		return TC_ACT_OK;
 
 	for (int i=0; i<64; i++) {
@@ -141,7 +137,7 @@ int tc_ingress_dns_parse(struct __sk_buff *skb)
 		return TC_ACT_OK;
 	cur += 4;
 
-	u16 an = bpf_ntohs(dh->ancount);
+	u16 an = bpf_ntohs(dns->ancount);
 	if (an > MAX_TYPE_A_ANSWERS) an = MAX_TYPE_A_ANSWERS;
 
 	struct rdns_key rk = {};
@@ -181,8 +177,6 @@ struct {
 	__uint(map_flags, BPF_F_NO_PREALLOC);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } domain_lpm SEC(".maps");
-
-#define barrier() asm volatile("" ::: "memory")
 
 static __noinline void reverse_qname(u8 dst[64], const u8 src[64], u8 qlen)
 {
