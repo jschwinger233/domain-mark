@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -81,11 +82,10 @@ func startCmd(_ *cobra.Command, _ []string) error {
 
 	objs := &bpf.BpfObjects{}
 	opts := &ebpf.CollectionOptions{
-		Maps: ebpf.MapOptions{PinPath: pinBase},
-		Programs: ebpf.ProgramOptions{
-			LogLevel: ebpf.LogLevelInstruction,
-		},
+		Maps:     ebpf.MapOptions{PinPath: pinBase},
+		Programs: ebpf.ProgramOptions{},
 	}
+	loadStartAt := time.Now()
 	if err := spec.LoadAndAssign(objs, opts); err != nil {
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
@@ -93,6 +93,7 @@ func startCmd(_ *cobra.Command, _ []string) error {
 		}
 		return fmt.Errorf("load objects: %w", err)
 	}
+	fmt.Printf("BPF objects loaded in %s\n", time.Since(loadStartAt))
 
 	cgl, err := link.AttachCgroup(link.CgroupOptions{
 		Path:    "/sys/fs/cgroup",

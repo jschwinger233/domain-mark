@@ -17,7 +17,7 @@
 #define RR_TYPE_A   1
 #define RR_CLASS_IN 1
 
-#define MAX_TYPE_A_ANSWERS 16
+#define MAX_TYPE_A_ANSWERS 32
 
 #define barrier() asm volatile("" ::: "memory")
 
@@ -68,6 +68,53 @@ struct {
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } decisions SEC(".maps");
 
+static __noinline u8 strstr(const u8 *s, u8 maxlen, u8 target)
+{
+	for (u8 i = 0; i < maxlen; i++) {
+		if (s[i] == target)
+			return i;
+	}
+	return 0;
+}
+
+struct rr_parse_ctx {
+	void *data_end;
+	u8 *cur;
+	u16 an;
+	struct rdns_val rv;
+};
+
+static __noinline int parse_rr_cb(u32 i, void *data)
+{
+	struct rr_parse_ctx *ctx = data;
+
+	if (i >= ctx->an)
+		return 1;
+
+	struct dns_rr *rr = (struct dns_rr *)ctx->cur;
+	if ((void *)(rr + 1) > ctx->data_end)
+		return 1;
+
+	if (bpf_ntohs(rr->type) == RR_TYPE_A &&
+	    bpf_ntohs(rr->class_) == RR_CLASS_IN &&
+	    bpf_ntohs(rr->rdlength) == 4) {
+		u8 *rdata = (u8 *)(rr + 1);
+		if (rdata + 4 > (u8 *)ctx->data_end)
+			return 1;
+
+		struct rdns_key rk = {};
+		rk.addr = *((u32 *)rdata);
+		bpf_map_update_elem(&rdns, &rk, &ctx->rv, BPF_ANY);
+	}
+
+	u16 rdlen = bpf_ntohs(rr->rdlength);
+	if (rdlen > 64)
+		return 1;
+
+	ctx->cur += sizeof(*rr) + rdlen;
+	return 0;
+}
+
 SEC("tc/ingress_dns_parse")
 int tc_ingress_dns_parse(struct __sk_buff *skb)
 {
@@ -108,32 +155,27 @@ int tc_ingress_dns_parse(struct __sk_buff *skb)
 	u8 *qname_ptr = (u8 *)(dns + 1);
 	u32 qname_off = (void *)qname_ptr - (void *)data;
 
-	struct rdns_val rv = {};
+	struct rr_parse_ctx rr_ctx = {};
 
-	u32 qname_len = sizeof(rv.qname);
+	u32 qname_len = sizeof(rr_ctx.rv.qname);
 	if ((void *)(qname_ptr + qname_len) > (void *)data_end)
 		qname_len = (u64)data_end - (u64)qname_ptr;
 
-	if (qname_len > sizeof(rv.qname))
-		qname_len = sizeof(rv.qname);
+	if (qname_len > sizeof(rr_ctx.rv.qname))
+		qname_len = sizeof(rr_ctx.rv.qname);
 
 	if (qname_len == 0)
 		return TC_ACT_OK;
 
-	if (bpf_skb_load_bytes(skb, qname_off, rv.qname, qname_len) < 0)
+	if (bpf_skb_load_bytes(skb, qname_off, rr_ctx.rv.qname, qname_len) < 0)
 		return TC_ACT_OK;
 
-	for (int i=0; i<64; i++) {
-		if (rv.qname[i] == 0) {
-			rv.qlen = i;
-			break;
-		}
-	}
 
-	if (rv.qlen == 0)
+	rr_ctx.rv.qlen = strstr(rr_ctx.rv.qname, 64, 0);
+	if (rr_ctx.rv.qlen == 0)
 		return TC_ACT_OK;
 
-	u8 *cur = qname_ptr + rv.qlen + 1;
+	u8 *cur = qname_ptr + rr_ctx.rv.qlen + 1;
 	if ((void *)(cur + 4) > data_end)
 		return TC_ACT_OK;
 	cur += 4;
@@ -141,32 +183,10 @@ int tc_ingress_dns_parse(struct __sk_buff *skb)
 	u16 an = bpf_ntohs(dns->ancount);
 	if (an > MAX_TYPE_A_ANSWERS) an = MAX_TYPE_A_ANSWERS;
 
-	struct rdns_key rk = {};
-	for (int ai = 0; ai < MAX_TYPE_A_ANSWERS; ai++) {
-		if (ai >= an)
-			return TC_ACT_OK;
-
-		struct dns_rr *rr = (struct dns_rr *)cur;
-
-		if ((void *)(rr + 1) > data_end)
-			return TC_ACT_OK;
-
-		if (bpf_ntohs(rr->type) == RR_TYPE_A &&
-		    bpf_ntohs(rr->class_) == RR_CLASS_IN &&
-		    bpf_ntohs(rr->rdlength) == 4) {
-			if ((void *)(rr + 1 + 4) > data_end)
-				return TC_ACT_OK;
-
-			rk.addr = *((u32 *)(rr + 1));
-			bpf_map_update_elem(&rdns, &rk, &rv, BPF_ANY);
-		}
-
-		u16 rdlen = bpf_ntohs(rr->rdlength);
-		if (rdlen > 64)
-			return TC_ACT_OK;
-
-		cur += sizeof(*rr) + rdlen;
-	}
+	rr_ctx.data_end = data_end;
+	rr_ctx.cur = cur;
+	rr_ctx.an = an;
+	bpf_loop(MAX_TYPE_A_ANSWERS, parse_rr_cb, &rr_ctx, 0);
 
 	return TC_ACT_OK;
 }
