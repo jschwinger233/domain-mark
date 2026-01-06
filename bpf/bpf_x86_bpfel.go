@@ -14,8 +14,8 @@ import (
 )
 
 type BpfDecision struct {
-	_    structs.HostLayout
-	Mark uint32
+	_       structs.HostLayout
+	Ifindex uint32
 }
 
 type BpfLpmKey struct {
@@ -77,8 +77,8 @@ type BpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfProgramSpecs struct {
-	CgroupConnect4DomainMark *ebpf.ProgramSpec `ebpf:"cgroup_connect4_domain_mark"`
-	TcIngressDnsParse        *ebpf.ProgramSpec `ebpf:"tc_ingress_dns_parse"`
+	CgroupConnect4DomainRoute *ebpf.ProgramSpec `ebpf:"cgroup_connect4_domain_route"`
+	TcIngressDnsParse         *ebpf.ProgramSpec `ebpf:"tc_ingress_dns_parse"`
 }
 
 // BpfMapSpecs contains maps before they are loaded into the kernel.
@@ -139,13 +139,13 @@ type BpfVariables struct {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfPrograms struct {
-	CgroupConnect4DomainMark *ebpf.Program `ebpf:"cgroup_connect4_domain_mark"`
-	TcIngressDnsParse        *ebpf.Program `ebpf:"tc_ingress_dns_parse"`
+	CgroupConnect4DomainRoute *ebpf.Program `ebpf:"cgroup_connect4_domain_route"`
+	TcIngressDnsParse         *ebpf.Program `ebpf:"tc_ingress_dns_parse"`
 }
 
 func (p *BpfPrograms) Close() error {
 	return _BpfClose(
-		p.CgroupConnect4DomainMark,
+		p.CgroupConnect4DomainRoute,
 		p.TcIngressDnsParse,
 	)
 }

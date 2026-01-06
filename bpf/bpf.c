@@ -11,7 +11,7 @@
 #define IPPROTO_UDP 17
 
 #define SOL_SOCKET 1
-#define SO_MARK 36
+#define SO_BINDTOIFINDEX	62
 
 #define DNS_QR_BIT  0x8000
 #define RR_TYPE_A   1
@@ -57,7 +57,7 @@ struct {
 } rdns SEC(".maps");
 
 struct decision {
-	u32 mark;
+	u32 ifindex;
 };
 
 struct {
@@ -230,48 +230,40 @@ static __noinline void reverse_qname(u8 dst[64], const u8 src[64], u8 qlen)
 	}
 }
 
-SEC("cgroup/connect4_domain_mark")
-int cgroup_connect4_domain_mark(struct bpf_sock_addr *ctx)
+SEC("cgroup/connect4_domain_route")
+int cgroup_connect4_domain_route(struct bpf_sock_addr *ctx)
 {
 	struct rdns_key rk = {};
 	rk.addr = ctx->user_ip4;
 
-	u32 mark;
+	u32 ifindex;
 
 	struct decision *rd = bpf_map_lookup_elem(&decisions, &rk);
 	if (rd){
-		mark = rd->mark;
-		goto set_mark;
+		ifindex = rd->ifindex;
+		goto set_ifindex;
 	}
 
 	struct rdns_val *rv = bpf_map_lookup_elem(&rdns, &rk);
-	if (!rv) {
-		struct lpm_key empty_key = {};
-		u32 *default_markp = bpf_map_lookup_elem(&domain_lpm, &empty_key);
-		if (default_markp && *default_markp) {
-			mark = *default_markp;
-			goto set_decision_and_mark;
-		}
+	if (!rv)
 		return 1;
-	}
 
 	struct lpm_key key = {};
 	key.prefixlen = rv->qlen * 8;
 	reverse_qname(key.rev_qname, rv->qname, rv->qlen);
 
-	u32 *markp = bpf_map_lookup_elem(&domain_lpm, &key);
-	if (!markp)
+	u32 *pifindex = bpf_map_lookup_elem(&domain_lpm, &key);
+	if (!pifindex)
 		return 1;
 
-	mark = *markp;
+	ifindex = *pifindex;
 
-set_decision_and_mark:
 	struct decision new_rd = {};
-	new_rd.mark = mark;
+	new_rd.ifindex = ifindex;
 	bpf_map_update_elem(&decisions, &rk, &new_rd, BPF_ANY);
 
-set_mark:
-	bpf_setsockopt(ctx, SOL_SOCKET, SO_MARK, &mark, sizeof(mark));
+set_ifindex:
+	bpf_setsockopt(ctx, SOL_SOCKET, SO_BINDTOIFINDEX, &ifindex, sizeof(ifindex));
 	return 1;
 }
 

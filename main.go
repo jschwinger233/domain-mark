@@ -98,7 +98,7 @@ func startCmd(_ *cobra.Command, _ []string) error {
 	cgl, err := link.AttachCgroup(link.CgroupOptions{
 		Path:    "/sys/fs/cgroup",
 		Attach:  ebpf.AttachCGroupInet4Connect,
-		Program: objs.CgroupConnect4DomainMark,
+		Program: objs.CgroupConnect4DomainRoute,
 	})
 	if err != nil {
 		return fmt.Errorf("attach cgroup inet4/connect: %w", err)
@@ -376,7 +376,7 @@ func decisionCmd(_ *cobra.Command, _ []string) error {
 	var v bpf.BpfDecision
 	for iter.Next(&k, &v) {
 		ip := ipv4FromU32(k.Addr)
-		fmt.Printf("%-15s  0x%x\n", ip, v.Mark)
+		fmt.Printf("%-15s  0x%x\n", ip, v.Ifindex)
 	}
 	return iter.Err()
 }
