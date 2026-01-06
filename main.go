@@ -29,9 +29,8 @@ const (
 func main() {
 	root := &cobra.Command{
 		Use:   "domain-mark",
-		Short: "Domain-based packet marking, kernel-fast and daemon-free.",
+		Short: "Domain-based socket routing via interface index, kernel-fast and daemon-free.",
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
-
 			if err := os.MkdirAll(pinBase, 0o755); err != nil {
 				return err
 			}
@@ -51,7 +50,7 @@ func main() {
 		RunE:  stopCmd,
 	}
 
-	rule := &cobra.Command{Use: "rule", Short: "Manage domain→mark rules (LPM trie)"}
+	rule := &cobra.Command{Use: "rule", Short: "Manage domain→ifindex rules (LPM trie)"}
 	rule.AddCommand(ruleListCmd(), ruleAddCmd(), ruleDelCmd())
 
 	rdns := &cobra.Command{
@@ -62,7 +61,7 @@ func main() {
 
 	rdec := &cobra.Command{
 		Use:   "decision",
-		Short: "Print decisions (ip mark)",
+		Short: "Print decisions (ip ifindex)",
 		RunE:  decisionCmd,
 	}
 
@@ -74,25 +73,16 @@ func main() {
 }
 
 func startCmd(_ *cobra.Command, _ []string) error {
-
-	spec, err := bpf.LoadBpf()
-	if err != nil {
-		return fmt.Errorf("load BPF spec: %w", err)
-	}
-
-	objs := &bpf.BpfObjects{}
 	opts := &ebpf.CollectionOptions{
 		Maps:     ebpf.MapOptions{PinPath: pinBase},
 		Programs: ebpf.ProgramOptions{},
 	}
 	loadStartAt := time.Now()
-	if err := spec.LoadAndAssign(objs, opts); err != nil {
-		var ve *ebpf.VerifierError
-		if errors.As(err, &ve) {
-			return fmt.Errorf("verifier:\n%+v", ve)
-		}
-		return fmt.Errorf("load objects: %w", err)
+	objs, closer, err := loadBpfObjects(opts)
+	if err != nil {
+		return err
 	}
+	defer closer()
 	fmt.Printf("BPF objects loaded in %s\n", time.Since(loadStartAt))
 
 	cgl, err := link.AttachCgroup(link.CgroupOptions{
@@ -143,7 +133,6 @@ func attachTCAll(prog *ebpf.Program) error {
 }
 
 func stopCmd(_ *cobra.Command, _ []string) error {
-
 	if err := detachCgroupPinned(); err != nil {
 		return err
 	}
@@ -172,7 +161,6 @@ func deleteTCAllByPriority(prio uint16, ingress bool) error {
 		return fmt.Errorf("list links: %w", err)
 	}
 	for _, l := range links {
-
 		filters, err := netlink.FilterList(l, parent)
 		if err != nil {
 			continue
@@ -183,7 +171,6 @@ func deleteTCAllByPriority(prio uint16, ingress bool) error {
 				continue
 			}
 			if bf.FilterAttrs.Priority == prio {
-
 				_ = netlink.FilterDel(bf)
 			}
 		}
@@ -211,7 +198,7 @@ func detachCgroupPinned() error {
 func ruleListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List LPM domain→mark rules",
+		Short: "List LPM domain→ifindex rules",
 		RunE: func(_ *cobra.Command, _ []string) error {
 			objs, closer, err := loadMapsOnly()
 			if err != nil {
@@ -221,14 +208,13 @@ func ruleListCmd() *cobra.Command {
 
 			iter := objs.DomainLpm.Iterate()
 			var key bpf.BpfLpmKey
-			var mark uint32
-			for iter.Next(&key, &mark) {
+			var ifindex uint32
+			for iter.Next(&key, &ifindex) {
 				if key.Prefixlen == 0 {
-					fmt.Printf("%-30s -> 0x%x\n", "default", mark)
 					continue
 				}
 				n := int(key.Prefixlen / 8)
-				if n < 0 || n > len(key.RevQname) {
+				if n > len(key.RevQname) {
 					continue
 				}
 				wire := reverseBytes(key.RevQname[:n])
@@ -236,7 +222,7 @@ func ruleListCmd() *cobra.Command {
 				if name == "" {
 					name = fmt.Sprintf("(bad:%x)", wire)
 				}
-				fmt.Printf("%-30s -> 0x%x\n", name, mark)
+				fmt.Printf("%-30s -> %d\n", name, ifindex)
 			}
 			return iter.Err()
 		},
@@ -245,14 +231,14 @@ func ruleListCmd() *cobra.Command {
 
 func ruleAddCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "add <domain> <mark>",
-		Short: "Add/replace a domain→mark rule",
+		Use:   "add <domain> <ifindex>",
+		Short: "Add/replace a domain→ifindex rule",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
 			domain := args[0]
-			mark, err := parseMark(args[1])
+			ifindex, err := parseIfindex(args[1])
 			if err != nil {
-				return fmt.Errorf("parse mark: %w", err)
+				return fmt.Errorf("parse ifindex: %w", err)
 			}
 
 			objs, closer, err := loadMapsOnly()
@@ -261,33 +247,14 @@ func ruleAddCmd() *cobra.Command {
 			}
 			defer closer()
 
-			if domain == "default" {
-				var key bpf.BpfLpmKey
-				key.Prefixlen = 0
-				if err := objs.DomainLpm.Update(&key, &mark, ebpf.UpdateAny); err != nil {
-					return fmt.Errorf("upsert default: %w", err)
-				}
-				fmt.Printf("default -> 0x%x\n", mark)
-				return nil
-			}
-
-			wire, err := normalizeDomainToDNSBytes(domain)
+			key, err := lpmKeyForDomain(domain)
 			if err != nil {
 				return err
 			}
-			rev := reverseBytes(wire)
-			if len(rev) > 64 {
-				return fmt.Errorf("reversed qname for %q is %d bytes; max supported is 64", domain, len(rev))
-			}
-
-			var key bpf.BpfLpmKey
-			key.Prefixlen = uint32(len(rev) * 8)
-			copy(key.RevQname[:], rev)
-
-			if err := objs.DomainLpm.Update(&key, &mark, ebpf.UpdateAny); err != nil {
+			if err := objs.DomainLpm.Update(&key, &ifindex, ebpf.UpdateAny); err != nil {
 				return fmt.Errorf("DomainLpm.Update: %w", err)
 			}
-			fmt.Printf("%s -> 0x%x\n", domain, mark)
+			fmt.Printf("%s -> %d\n", domain, ifindex)
 			return nil
 		},
 	}
@@ -296,7 +263,7 @@ func ruleAddCmd() *cobra.Command {
 func ruleDelCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "del <domain>",
-		Short: "Delete a specific domain→mark rule (mark is ignored server-side, kept for CLI symmetry)",
+		Short: "Delete a specific domain→ifindex rule",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			domain := args[0]
@@ -307,28 +274,10 @@ func ruleDelCmd() *cobra.Command {
 			}
 			defer closer()
 
-			if domain == "default" {
-				var key bpf.BpfLpmKey
-				key.Prefixlen = 0
-				if err := objs.DomainLpm.Delete(&key); err != nil {
-					return fmt.Errorf("delete default: %w", err)
-				}
-				fmt.Println("deleted: default")
-				return nil
-			}
-
-			wire, err := normalizeDomainToDNSBytes(domain)
+			key, err := lpmKeyForDomain(domain)
 			if err != nil {
 				return err
 			}
-			rev := reverseBytes(wire)
-			if len(rev) > 64 {
-				return fmt.Errorf("reversed qname for %q is %d bytes; max supported is 64", domain, len(rev))
-			}
-			var key bpf.BpfLpmKey
-			key.Prefixlen = uint32(len(rev) * 8)
-			copy(key.RevQname[:], rev)
-
 			if err := objs.DomainLpm.Delete(&key); err != nil {
 				return fmt.Errorf("DomainLpm.Delete: %w", err)
 			}
@@ -376,20 +325,23 @@ func decisionCmd(_ *cobra.Command, _ []string) error {
 	var v bpf.BpfDecision
 	for iter.Next(&k, &v) {
 		ip := ipv4FromU32(k.Addr)
-		fmt.Printf("%-15s  0x%x\n", ip, v.Ifindex)
+		fmt.Printf("%-15s  %d\n", ip, v.Ifindex)
 	}
 	return iter.Err()
 }
 
 func loadMapsOnly() (*bpf.BpfObjects, func(), error) {
+	return loadBpfObjects(&ebpf.CollectionOptions{
+		Maps: ebpf.MapOptions{PinPath: pinBase},
+	})
+}
+
+func loadBpfObjects(opts *ebpf.CollectionOptions) (*bpf.BpfObjects, func(), error) {
 	spec, err := bpf.LoadBpf()
 	if err != nil {
 		return nil, nil, fmt.Errorf("load BPF spec: %w", err)
 	}
 	objs := &bpf.BpfObjects{}
-	opts := &ebpf.CollectionOptions{
-		Maps: ebpf.MapOptions{PinPath: pinBase},
-	}
 	if err := spec.LoadAndAssign(objs, opts); err != nil {
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
@@ -440,7 +392,7 @@ func dnsWireToDomain(wire []byte) string {
 		if l == 0 {
 			break
 		}
-		if l <= 0 || l > 63 || i+l > len(wire) {
+		if l > 63 || i+l > len(wire) {
 			return ""
 		}
 		parts = append(parts, string(wire[i:i+l]))
@@ -449,9 +401,24 @@ func dnsWireToDomain(wire []byte) string {
 	return strings.Join(parts, ".")
 }
 
-func parseMark(s string) (uint32, error) {
+func parseIfindex(s string) (uint32, error) {
 	u, err := strconv.ParseUint(s, 0, 32)
 	return uint32(u), err
+}
+
+func lpmKeyForDomain(domain string) (bpf.BpfLpmKey, error) {
+	var key bpf.BpfLpmKey
+	wire, err := normalizeDomainToDNSBytes(domain)
+	if err != nil {
+		return key, err
+	}
+	rev := reverseBytes(wire)
+	if len(rev) > len(key.RevQname) {
+		return key, fmt.Errorf("reversed qname for %q is %d bytes; max supported is %d", domain, len(rev), len(key.RevQname))
+	}
+	key.Prefixlen = uint32(len(rev) * 8)
+	copy(key.RevQname[:], rev)
+	return key, nil
 }
 
 func ipv4FromU32(be uint32) string {
