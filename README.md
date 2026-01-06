@@ -1,66 +1,94 @@
-# domain-mark
+# domain-route
 
-Domain-based packet marking, kernel-fast and daemon-free.
+Domain-based socket routing by interface index, kernel-fast and daemon-free.
 
 > Early access. This project is built for my personal use. Expect sharp edges and breaking changes.
 
-## What it does (typical use)
+## What it does
 
-Domain-based routing. You assign an fwmark to traffic by its destination domain (e.g. *.example.com) and then use Linux policy routing to steer those packets via a specific table, gateway, or interface.
+`domain-route` steers outbound IPv4 connections to specific interfaces based on the destination domain:
+
+- A tc ingress program watches DNS A responses and builds a reverse-DNS cache (IPv4 → domain).
+- A cgroup/connect4 program matches the destination domain against a suffix rule set (LPM trie).
+- The socket is bound to the selected interface via `SO_BINDTOIFINDEX`.
+
+There is no long-running daemon. `start` attaches and exits; maps and links are pinned under `/sys/fs/bpf/domain-mark` (current pin path).
+
+Note: the binary/CLI output still uses `domain-mark` until the rename lands; commands below reflect that.
+
+## Requirements
+
+- Linux with eBPF, bpffs mounted at `/sys/fs/bpf`, and cgroup v2 mounted at `/sys/fs/cgroup`.
+- `tc` (clsact) and root privileges (or equivalent capabilities).
+
+## Typical use
 
 ```
 # 1) Attach programs, pin links & maps (requires root); exits immediately
 sudo ./domain-mark start
 
-# 2) Add your domain→mark rules, mark *.example.com with 0x23
-sudo ./domain-mark rule add example.com 0x23
+# 2) Find an interface index (example uses `eth1` -> 3)
+ip -o link show
 
-# 3) Plug the mark into policy routing (example):
-sudo ip rule add fwmark 0x23 priority 100 lookup 100
-sudo ip route add default via 192.0.2.1 dev eth1 table 100
+# 3) Add your domain → ifindex rule (matches example.com and *.example.com)
+sudo ./domain-mark rule add example.com 3
 
 # 4) Inspect state
 sudo ./domain-mark rule list
 sudo ./domain-mark rdns       # reverse-DNS cache (IPv4 → domain)
-sudo ./domain-mark decision   # show effective IP → mark decisions
+sudo ./domain-mark decision   # effective IP → ifindex decisions
 
 # 5) Tear down
 sudo ./domain-mark stop
 ```
 
-## Why it’s different
+## How matching works
 
-- eBPF-based: Packet classification & marking happen in kernel space.
-- Daemonless workflow: start attaches and exits; nothing keeps running.
-- Blazing fast: No per-packet context switches; built to run at line rate.
+Rules are suffix matches on DNS wire-format names. A rule for `example.com` matches
+`example.com` and any subdomain (e.g. `www.example.com`). Domains are normalized to
+lowercase and without a trailing dot.
 
 ## Current limitations
 
-- IPv4 only. (A records)
-- Simple DNS parsing only. Recognizes DNS responses in a fixed form:
-  - Must be an A RR.
-  - The name must be compressed (pointer form).
+- IPv4 only.
+- Only UDP DNS responses from source port 53 are parsed.
+- Requires exactly one question (`qdcount == 1`).
+- DNS answers must use compressed names (pointer form) to fit the fixed RR parser.
+- Only A records are used (IPv4, 4-byte RDATA).
+- Decisions are cached (LRU) by destination IP until evicted or `stop` is run.
 
-## How it works
+## How it works (detail)
 
-1. Reverse-DNS cache: eBPF tracks DNS A answers and maps dst IPv4 → domain.
-2. Rule map (LPM trie): Keys are reversed qname bytes with prefix length, letting *.example.com be expressed as a prefix.
-3. Data path marking: tc/cgroup eBPF looks up the current destination IP in the cache, matches against the LPM rules, and writes skb->mark.
+1. **Reverse-DNS cache:** tc ingress parses DNS A responses and records `dst IPv4 → qname`.
+2. **Rule map:** a BPF LPM trie stores reversed qname bytes → interface index.
+3. **Data path:** cgroup/connect4 looks up the destination IP, matches the LPM rule,
+   caches the decision, and binds the socket to the chosen interface.
 
 ## CLI
 
 ```
-Domain-based packet marking, kernel-fast and daemon-free.
+Domain-based socket routing via interface index, kernel-fast and daemon-free.
 
 Usage:
   domain-mark [command]
 
 Available Commands:
-  decision    Print decisions (ip mark)
+  decision    Print decisions (ip ifindex)
   help        Help about any command
   rdns        Print reverse-DNS cache (ipv4 domain)
-  rule        Manage domain→mark rules (LPM trie)
+  rule        Manage domain→ifindex rules (LPM trie)
   start       Attach tc/cgroup programs, pin link & maps, then exit
   stop        Detach cgroup, remove tc filters, and unpin maps
+```
 
+## Build
+
+The repository includes a prebuilt eBPF object for x86. For a fresh build:
+
+```
+# Build the Go binary
+go build ./...
+
+# (Optional) Regenerate eBPF object (requires clang-19 + llvm, and bpf2go)
+go generate ./bpf
 ```
