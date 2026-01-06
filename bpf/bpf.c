@@ -118,9 +118,6 @@ static __noinline int parse_rr_cb(u32 i, void *data)
 SEC("tc/ingress_dns_parse")
 int tc_ingress_dns_parse(struct __sk_buff *skb)
 {
-	if (skb->protocol != bpf_htons(ETH_P_IP))
-		return TC_ACT_OK;
-
 	void *data = (void *)(long)skb->data;
 	void *data_end = (void *)(long)skb->data_end;
 
