@@ -14,6 +14,8 @@
 #define SO_MARK 36
 
 #define DNS_QR_BIT  0x8000
+#define RR_TYPE_A   1
+#define RR_CLASS_IN 1
 
 #define MAX_TYPE_A_ANSWERS 16
 
@@ -29,13 +31,12 @@ struct dns_hdr {
 	u16 arcount;
 } __attribute__((packed));
 
-struct dns_rr_a {
+struct dns_rr {
 	u16 name;
 	u16 type;
 	u16 class_;
 	u32 ttl;
 	u16 rdlength;
-	u32 addr;
 } __attribute__((packed));
 
 struct rdns_key {
@@ -145,20 +146,26 @@ int tc_ingress_dns_parse(struct __sk_buff *skb)
 		if (ai >= an)
 			return TC_ACT_OK;
 
-		struct dns_rr_a *rr = (struct dns_rr_a *)cur;
+		struct dns_rr *rr = (struct dns_rr *)cur;
 
 		if ((void *)(rr + 1) > data_end)
 			return TC_ACT_OK;
 
-		if (bpf_ntohs(rr->rdlength) != 4)
-			return TC_ACT_OK;
+		if (bpf_ntohs(rr->type) == RR_TYPE_A &&
+		    bpf_ntohs(rr->class_) == RR_CLASS_IN &&
+		    bpf_ntohs(rr->rdlength) == 4) {
+			if ((void *)(rr + 1 + 4) > data_end)
+				return TC_ACT_OK;
 
-		if (bpf_ntohs(rr->type) == 1 /* A */ && bpf_ntohs(rr->class_) == 1 /* IN */) {
-			rk.addr = rr->addr;
+			rk.addr = *((u32 *)(rr + 1));
 			bpf_map_update_elem(&rdns, &rk, &rv, BPF_ANY);
 		}
 
-		cur += sizeof(*rr);
+		u16 rdlen = bpf_ntohs(rr->rdlength);
+		if (rdlen > 64)
+			return TC_ACT_OK;
+
+		cur += sizeof(*rr) + rdlen;
 	}
 
 	return TC_ACT_OK;
