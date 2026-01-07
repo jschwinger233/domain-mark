@@ -211,6 +211,7 @@ func ruleListCmd() *cobra.Command {
 			var ifindex uint32
 			for iter.Next(&key, &ifindex) {
 				if key.Prefixlen == 0 {
+					fmt.Printf("%-30s -> %d\n", "default", ifindex)
 					continue
 				}
 				n := int(key.Prefixlen / 8)
@@ -247,6 +248,15 @@ func ruleAddCmd() *cobra.Command {
 			}
 			defer closer()
 
+			if isDefaultDomain(domain) {
+				var key bpf.BpfLpmKey
+				if err := objs.DomainLpm.Update(&key, &ifindex, ebpf.UpdateAny); err != nil {
+					return fmt.Errorf("upsert default: %w", err)
+				}
+				fmt.Printf("default -> %d\n", ifindex)
+				return nil
+			}
+
 			key, err := lpmKeyForDomain(domain)
 			if err != nil {
 				return err
@@ -273,6 +283,15 @@ func ruleDelCmd() *cobra.Command {
 				return err
 			}
 			defer closer()
+
+			if isDefaultDomain(domain) {
+				var key bpf.BpfLpmKey
+				if err := objs.DomainLpm.Delete(&key); err != nil {
+					return fmt.Errorf("delete default: %w", err)
+				}
+				fmt.Println("deleted: default")
+				return nil
+			}
 
 			key, err := lpmKeyForDomain(domain)
 			if err != nil {
@@ -404,6 +423,10 @@ func dnsWireToDomain(wire []byte) string {
 func parseIfindex(s string) (uint32, error) {
 	u, err := strconv.ParseUint(s, 0, 32)
 	return uint32(u), err
+}
+
+func isDefaultDomain(domain string) bool {
+	return strings.EqualFold(strings.TrimSpace(domain), "default")
 }
 
 func lpmKeyForDomain(domain string) (bpf.BpfLpmKey, error) {

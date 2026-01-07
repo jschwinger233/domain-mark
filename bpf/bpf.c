@@ -241,28 +241,31 @@ int cgroup_connect4_domain_route(struct bpf_sock_addr *ctx)
 	struct decision *rd = bpf_map_lookup_elem(&decisions, &rk);
 	if (rd){
 		ifindex = rd->ifindex;
-		goto set_ifindex;
+	} else {
+		struct rdns_val *rv = bpf_map_lookup_elem(&rdns, &rk);
+		if (!rv) {
+			struct lpm_key empty_key = {};
+			u32 *default_ifindexp = bpf_map_lookup_elem(&domain_lpm, &empty_key);
+			if (!default_ifindexp || !*default_ifindexp)
+				return 1;
+			ifindex = *default_ifindexp;
+		} else {
+			struct lpm_key key = {};
+			key.prefixlen = rv->qlen * 8;
+			reverse_qname(key.rev_qname, rv->qname, rv->qlen);
+
+			u32 *pifindex = bpf_map_lookup_elem(&domain_lpm, &key);
+			if (!pifindex)
+				return 1;
+
+			ifindex = *pifindex;
+		}
+
+		struct decision new_rd = {};
+		new_rd.ifindex = ifindex;
+		bpf_map_update_elem(&decisions, &rk, &new_rd, BPF_ANY);
 	}
 
-	struct rdns_val *rv = bpf_map_lookup_elem(&rdns, &rk);
-	if (!rv)
-		return 1;
-
-	struct lpm_key key = {};
-	key.prefixlen = rv->qlen * 8;
-	reverse_qname(key.rev_qname, rv->qname, rv->qlen);
-
-	u32 *pifindex = bpf_map_lookup_elem(&domain_lpm, &key);
-	if (!pifindex)
-		return 1;
-
-	ifindex = *pifindex;
-
-	struct decision new_rd = {};
-	new_rd.ifindex = ifindex;
-	bpf_map_update_elem(&decisions, &rk, &new_rd, BPF_ANY);
-
-set_ifindex:
 	bpf_setsockopt(ctx, SOL_SOCKET, SO_BINDTOIFINDEX, &ifindex, sizeof(ifindex));
 	return 1;
 }
