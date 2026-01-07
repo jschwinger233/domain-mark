@@ -237,6 +237,10 @@ int cgroup_connect4_domain_route(struct bpf_sock_addr *ctx)
 	rk.addr = ctx->user_ip4;
 
 	u32 ifindex;
+	u32 dip = bpf_ntohl(ctx->user_ip4);
+	if ((dip & 0xFF000000) == 0x7F000000 ||
+	    (dip & 0xFFF00000) == 0xAC100000)
+		return 1;
 
 	struct decision *rd = bpf_map_lookup_elem(&decisions, &rk);
 	if (rd){
